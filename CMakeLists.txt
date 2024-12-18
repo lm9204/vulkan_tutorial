@@ -67,3 +67,70 @@ elseif (APPLE)
     find_library(COREVIDEO_LIBRARY CoreVideo REQUIRED)
     target_link_libraries(vulkan_tutorial PRIVATE ${COCOA_LIBRARY} ${IOKIT_LIBRARY} ${COREVIDEO_LIBRARY})
 endif()
+
+# -------------------------------------------------
+# glslc 실행 파일 위치 설정
+# -------------------------------------------------
+
+# OS별 glslc 실행 파일 경로
+if (WIN32)
+    set(GLSLC_EXECUTABLE "${VULKAN_SDK}/Bin/glslc.exe")
+elseif (APPLE)
+    set(GLSLC_EXECUTABLE "${VULKAN_SDK}/bin/glslc")
+elseif (UNIX)
+    set(GLSLC_EXECUTABLE "${VULKAN_SDK}/bin/glslc")
+else()
+    message(FATAL_ERROR "Unsupported platform for glslc.")
+endif()
+
+# glslc 존재 여부 확인
+if (NOT EXISTS ${GLSLC_EXECUTABLE})
+    message(FATAL_ERROR "glslc not found at ${GLSLC_EXECUTABLE}. Please ensure Vulkan SDK is installed and the path is correct.")
+endif()
+
+# -------------------------------------------------
+# 셰이더 컴파일 설정
+# -------------------------------------------------
+
+# 1. shader 디렉토리 생성
+add_custom_target(
+    CreateShaderOutputDir
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/shader
+    COMMENT "Creating shader output directory"
+)
+
+# 2. shader/ 디렉토리 내 모든 .vert와 .frag 파일 검색
+file(GLOB SHADER_FILES "${CMAKE_SOURCE_DIR}/shader/*.vert" "${CMAKE_SOURCE_DIR}/shader/*.frag")
+
+# 3. 셰이더 파일 컴파일
+set(COMPILED_SHADERS "")
+foreach(SHADER_FILE ${SHADER_FILES})
+    get_filename_component(FILENAME_WE ${SHADER_FILE} NAME_WE)
+    get_filename_component(FILE_EXTENSION ${SHADER_FILE} EXT)
+
+    set(OUTPUT_FILE "${CMAKE_BINARY_DIR}/shader/${FILENAME_WE}${FILE_EXTENSION}.spv")
+
+    # 디렉토리 생성 타겟 의존성 추가
+    add_custom_command(
+        OUTPUT ${OUTPUT_FILE}
+        COMMAND ${GLSLC_EXECUTABLE} ${SHADER_FILE} -o ${OUTPUT_FILE}
+        DEPENDS ${SHADER_FILE} CreateShaderOutputDir
+        COMMENT "Compiling shader: ${SHADER_FILE} -> ${OUTPUT_FILE}"
+        VERBATIM
+    )
+
+    list(APPEND COMPILED_SHADERS ${OUTPUT_FILE})
+endforeach()
+
+# 4. CompileShaders 타겟 정의
+add_custom_target(
+    CompileShaders ALL
+    DEPENDS ${COMPILED_SHADERS}
+)
+
+# 셰이더 컴파일 전용 타겟
+add_custom_target(
+    compile_shaders
+    COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target CompileShaders
+    COMMENT "Re-compiling all shaders"
+)

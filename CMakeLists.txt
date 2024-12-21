@@ -38,12 +38,55 @@ ExternalProject_Add(glm
     INSTALL_COMMAND ""
 )
 
+# External 디렉토리 설정
+set(EXTERNAL_DIR ${CMAKE_BINARY_DIR}/external)
+
+# stb_image.h URL 및 다운로드 경로 설정
+set(STB_IMAGE_URL https://raw.githubusercontent.com/nothings/stb/master/stb_image.h)
+set(STB_IMAGE_FILE ${EXTERNAL_DIR}/stb/stb_image.h)
+
+# 다운로드 명령어 설정
+if (UNIX)
+    # Linux/macOS에서 wget 또는 curl 확인
+    find_program(WGET_EXECUTABLE wget)
+    find_program(CURL_EXECUTABLE curl)
+    if (WGET_EXECUTABLE)
+        set(DOWNLOAD_COMMAND ${WGET_EXECUTABLE} -O ${STB_IMAGE_FILE} ${STB_IMAGE_URL})
+    elseif (CURL_EXECUTABLE)
+        set(DOWNLOAD_COMMAND ${CURL_EXECUTABLE} -L -o ${STB_IMAGE_FILE} ${STB_IMAGE_URL})
+    else()
+        message(FATAL_ERROR "Neither wget nor curl was found. Please install one of them.")
+    endif()
+elseif (WIN32)
+    # Windows에서 PowerShell 명령을 사용
+    find_program(POWERSHELL_EXECUTABLE powershell)
+    if (NOT POWERSHELL_EXECUTABLE)
+        message(FATAL_ERROR "PowerShell is required to download files, but it was not found.")
+    endif()
+    set(DOWNLOAD_COMMAND ${POWERSHELL_EXECUTABLE} -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri ${STB_IMAGE_URL} -OutFile ${STB_IMAGE_FILE}")
+else()
+    message(FATAL_ERROR "Unsupported platform for downloading files.")
+endif()
+
+# 다운로드 디렉토리 생성 및 파일 다운로드
+add_custom_command(
+    OUTPUT ${STB_IMAGE_FILE}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${EXTERNAL_DIR}/stb
+    COMMAND ${DOWNLOAD_COMMAND}
+    COMMENT "Downloading stb_image.h from ${STB_IMAGE_URL}"
+    VERBATIM
+)
+
+# 다운로드한 파일을 컴파일 의존성에 추가
+add_custom_target(DownloadSTB ALL DEPENDS ${STB_IMAGE_FILE})
+
 # GLFW 및 GLM 경로 설정
-add_dependencies(vulkan_tutorial glfw glm)
+add_dependencies(vulkan_tutorial glfw glm DownloadSTB CopyTextures)
 
 target_include_directories(vulkan_tutorial PRIVATE
     ${EXTERNAL_DIR}/glfw/install/include
     ${EXTERNAL_DIR}/glm/src/glm
+    ${EXTERNAL_DIR}/stb
 )
 target_link_libraries(vulkan_tutorial PRIVATE
     ${EXTERNAL_DIR}/glfw/install/lib/libglfw3.a
@@ -134,3 +177,17 @@ add_custom_target(
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target CompileShaders
     COMMENT "Re-compiling all shaders"
 )
+
+# 소스 디렉토리 및 빌드 디렉토리 설정
+set(SOURCE_TEXTURE_DIR ${CMAKE_SOURCE_DIR}/texture)
+set(BUILD_TEXTURE_DIR ${CMAKE_BINARY_DIR}/texture)
+
+add_custom_command(
+    OUTPUT ${BUILD_TEXTURE_DIR}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${BUILD_TEXTURE_DIR}
+    COMMAND ${CMAKE_COMMAND} -E copy_directory ${SOURCE_TEXTURE_DIR} ${BUILD_TEXTURE_DIR}
+    COMMENT "Copying texture directory to build folder"
+)
+
+# Texture 복사 타겟 생성
+add_custom_target(CopyTextures ALL DEPENDS ${BUILD_TEXTURE_DIR})

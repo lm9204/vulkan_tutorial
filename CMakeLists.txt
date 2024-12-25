@@ -183,11 +183,14 @@ set(SOURCE_TEXTURE_DIR ${CMAKE_SOURCE_DIR}/texture)
 set(BUILD_TEXTURE_DIR ${CMAKE_BINARY_DIR}/texture)
 
 add_custom_command(
-    OUTPUT ${BUILD_TEXTURE_DIR}
+    OUTPUT ${BUILD_TEXTURE_DIR}/.synced
     COMMAND ${CMAKE_COMMAND} -E make_directory ${BUILD_TEXTURE_DIR}
+    COMMAND ${CMAKE_COMMAND} -E remove_directory ${BUILD_TEXTURE_DIR}
     COMMAND ${CMAKE_COMMAND} -E copy_directory ${SOURCE_TEXTURE_DIR} ${BUILD_TEXTURE_DIR}
-    COMMENT "Copying texture directory to build folder"
+    COMMAND ${CMAKE_COMMAND} -E touch ${BUILD_TEXTURE_DIR}/.synced
+    COMMENT "Synchronizing texture directory"
+    VERBATIM
 )
 
 # Texture 복사 타겟 생성
-add_custom_target(CopyTextures ALL DEPENDS ${BUILD_TEXTURE_DIR})
+add_custom_target(CopyTextures ALL DEPENDS ${BUILD_TEXTURE_DIR}/.synced)

@@ -9,7 +9,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # 소스 파일
-set(SOURCE_FILES src/main.cpp)
+# set(SOURCE_FILES src/main.cpp src/Skeleton.h src/Bones.h)
+file(GLOB SOURCE_FILES "src/*")
 
 # 실행 파일 생성
 add_executable(vulkan_tutorial ${SOURCE_FILES})
@@ -38,55 +39,95 @@ ExternalProject_Add(glm
     INSTALL_COMMAND ""
 )
 
-# External 디렉토리 설정
-set(EXTERNAL_DIR ${CMAKE_BINARY_DIR}/external)
-
 # stb_image.h URL 및 다운로드 경로 설정
 set(STB_IMAGE_URL https://raw.githubusercontent.com/nothings/stb/master/stb_image.h)
 set(STB_IMAGE_FILE ${EXTERNAL_DIR}/stb/stb_image.h)
 
-# 다운로드 명령어 설정
-if (UNIX)
-    # Linux/macOS에서 wget 또는 curl 확인
-    find_program(WGET_EXECUTABLE wget)
-    find_program(CURL_EXECUTABLE curl)
-    if (WGET_EXECUTABLE)
-        set(DOWNLOAD_COMMAND ${WGET_EXECUTABLE} -O ${STB_IMAGE_FILE} ${STB_IMAGE_URL})
-    elseif (CURL_EXECUTABLE)
-        set(DOWNLOAD_COMMAND ${CURL_EXECUTABLE} -L -o ${STB_IMAGE_FILE} ${STB_IMAGE_URL})
+set(STB_IMAGE_WRITE_URL https://raw.githubusercontent.com/syoyo/tinygltf/refs/heads/release/stb_image_write.h)
+set(STB_IMAGE_WRITE_FILE ${EXTERNAL_DIR}/stb/stb_image_write.h)
+
+set(TINYOBJLOADER_URL https://raw.githubusercontent.com/tinyobjloader/tinyobjloader/refs/heads/release/tiny_obj_loader.h)
+set(TINYOBJLOADER_FILE ${EXTERNAL_DIR}/tinyobjloader/tiny_obj_loader.h)
+
+set(TINYGLTFLOADER_URL https://raw.githubusercontent.com/syoyo/tinygltf/refs/heads/release/tiny_gltf.h)
+set(TINYGLTFLOADER_FILE ${EXTERNAL_DIR}/tinygltfloader/tiny_gltf.h)
+
+set(JSON_URL https://raw.githubusercontent.com/syoyo/tinygltf/refs/heads/release/json.hpp)
+set(JSON_FILE ${EXTERNAL_DIR}/tinygltfloader/json.hpp)
+
+# 파일 다운로드를 설정하는 함수
+function(configure_download_command url output_file target_name)
+    get_filename_component(output_dir ${output_file} DIRECTORY)
+    if (UNIX)
+        # Linux/macOS에서 wget 또는 curl 확인
+        find_program(WGET_EXECUTABLE wget)
+        find_program(CURL_EXECUTABLE curl)
+        if (WGET_EXECUTABLE)
+            add_custom_command(
+                OUTPUT ${output_file}
+                COMMAND ${CMAKE_COMMAND} -E make_directory ${output_dir}
+                COMMAND ${WGET_EXECUTABLE} -O ${output_file} ${url}
+                COMMENT "Downloading ${output_file} from ${url}"
+                VERBATIM
+            )
+        elseif (CURL_EXECUTABLE)
+            add_custom_command(
+                OUTPUT ${output_file}
+                COMMAND ${CMAKE_COMMAND} -E make_directory ${output_dir}
+                COMMAND ${CURL_EXECUTABLE} -L ${url} -o ${output_file}
+                COMMENT "Downloading ${output_file} from ${url}"
+                VERBATIM
+            )
+        else()
+            message(FATAL_ERROR "Neither wget nor curl was found. Please install one of them.")
+        endif()
+    elseif (WIN32)
+        # Windows에서 PowerShell 명령을 사용
+        find_program(POWERSHELL_EXECUTABLE powershell)
+        if (NOT POWERSHELL_EXECUTABLE)
+            message(FATAL_ERROR "PowerShell is required to download files, but it was not found.")
+        endif()
+        add_custom_command(
+            OUTPUT ${output_file}
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${output_dir}
+            COMMAND ${POWERSHELL_EXECUTABLE} -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri ${url} -OutFile ${output_file}"
+            COMMENT "Downloading ${output_file} from ${url}"
+            VERBATIM
+        )
     else()
-        message(FATAL_ERROR "Neither wget nor curl was found. Please install one of them.")
+        message(FATAL_ERROR "Unsupported platform for downloading files.")
     endif()
-elseif (WIN32)
-    # Windows에서 PowerShell 명령을 사용
-    find_program(POWERSHELL_EXECUTABLE powershell)
-    if (NOT POWERSHELL_EXECUTABLE)
-        message(FATAL_ERROR "PowerShell is required to download files, but it was not found.")
-    endif()
-    set(DOWNLOAD_COMMAND ${POWERSHELL_EXECUTABLE} -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri ${STB_IMAGE_URL} -OutFile ${STB_IMAGE_FILE}")
-else()
-    message(FATAL_ERROR "Unsupported platform for downloading files.")
-endif()
+
+    add_custom_target(${target_name} ALL DEPENDS ${output_file})
+endfunction()
 
 # 다운로드 디렉토리 생성 및 파일 다운로드
-add_custom_command(
-    OUTPUT ${STB_IMAGE_FILE}
-    COMMAND ${CMAKE_COMMAND} -E make_directory ${EXTERNAL_DIR}/stb
-    COMMAND ${DOWNLOAD_COMMAND}
-    COMMENT "Downloading stb_image.h from ${STB_IMAGE_URL}"
-    VERBATIM
-)
-
-# 다운로드한 파일을 컴파일 의존성에 추가
-add_custom_target(DownloadSTB ALL DEPENDS ${STB_IMAGE_FILE})
+configure_download_command(${STB_IMAGE_URL} ${STB_IMAGE_FILE} DownloadSTB)
+configure_download_command(${STB_IMAGE_WRITE_URL} ${STB_IMAGE_WRITE_FILE} DownloadSTBWRITE)
+configure_download_command(${TINYOBJLOADER_URL} ${TINYOBJLOADER_FILE} DownloadTINYOBJ)
+configure_download_command(${TINYGLTFLOADER_URL} ${TINYGLTFLOADER_FILE} DownloadTINYGLTF)
+configure_download_command(${JSON_URL} ${JSON_FILE} DownloadJSON)
 
 # GLFW 및 GLM 경로 설정
-add_dependencies(vulkan_tutorial glfw glm DownloadSTB CopyTextures)
+add_dependencies( vulkan_tutorial
+    glfw
+    glm
+    DownloadSTB
+    DownloadSTBWRITE
+    DownloadTINYOBJ
+    DownloadTINYGLTF
+    DownloadJSON
+    CopyTextures
+    CopyObjects
+)
 
-target_include_directories(vulkan_tutorial PRIVATE
+target_include_directories(vulkan_tutorial PUBLIC
+    ${CMAKE_SOURCE_DIR}/src
     ${EXTERNAL_DIR}/glfw/install/include
     ${EXTERNAL_DIR}/glm/src/glm
     ${EXTERNAL_DIR}/stb
+    ${EXTERNAL_DIR}/tinyobjloader
+    ${EXTERNAL_DIR}/tinygltfloader
 )
 target_link_libraries(vulkan_tutorial PRIVATE
     ${EXTERNAL_DIR}/glfw/install/lib/libglfw3.a
@@ -182,15 +223,24 @@ add_custom_target(
 set(SOURCE_TEXTURE_DIR ${CMAKE_SOURCE_DIR}/texture)
 set(BUILD_TEXTURE_DIR ${CMAKE_BINARY_DIR}/texture)
 
-add_custom_command(
-    OUTPUT ${BUILD_TEXTURE_DIR}/.synced
+set(SOURCE_OBJECTS_DIR ${CMAKE_SOURCE_DIR}/model)
+set(BUILD_OBJECTS_DIR ${CMAKE_BINARY_DIR}/model)
+
+file(GLOB_RECURSE TEXTURE_FILES "${SOURCE_TEXTURE_DIR}/*")
+file(GLOB_RECURSE OBJECT_FILES "${SOURCE_OBJECTS_DIR}/*")
+
+add_custom_target(
+    CopyTextures
     COMMAND ${CMAKE_COMMAND} -E make_directory ${BUILD_TEXTURE_DIR}
-    COMMAND ${CMAKE_COMMAND} -E remove_directory ${BUILD_TEXTURE_DIR}
     COMMAND ${CMAKE_COMMAND} -E copy_directory ${SOURCE_TEXTURE_DIR} ${BUILD_TEXTURE_DIR}
-    COMMAND ${CMAKE_COMMAND} -E touch ${BUILD_TEXTURE_DIR}/.synced
     COMMENT "Synchronizing texture directory"
-    VERBATIM
+    DEPENDS ${TEXTURE_FILES}
 )
 
-# Texture 복사 타겟 생성
-add_custom_target(CopyTextures ALL DEPENDS ${BUILD_TEXTURE_DIR}/.synced)
+add_custom_target(
+    CopyObjects
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${BUILD_OBJECTS_DIR}
+    COMMAND ${CMAKE_COMMAND} -E copy_directory ${SOURCE_OBJECTS_DIR} ${BUILD_OBJECTS_DIR}
+    COMMENT "Synchronizing object directory"
+    DEPENDS ${OBJECT_FILES}
+)

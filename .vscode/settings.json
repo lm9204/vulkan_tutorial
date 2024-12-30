@@ -57,6 +57,8 @@
 		"queue": "cpp",
 		"set": "cpp",
 		"span": "cpp",
-		"stack": "cpp"
+		"stack": "cpp",
+		"forward_list": "cpp",
+		"valarray": "cpp"
 	}
 }

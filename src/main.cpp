@@ -8,13 +8,16 @@
 #include <algorithm>
 #include <vector>
 #include <map>
+#include <unordered_map>
 #include <optional>
 #include <set>
 #include <array>
 #include <chrono>
 
+#define TINYGLTF_IMPLEMENTATION
 #define STB_IMAGE_IMPLEMENTATION
-#include <stb_image.h>
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include <tiny_gltf.h>
 
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
@@ -23,6 +26,18 @@
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/quaternion.hpp>
+#include <glm/gtc/type_ptr.hpp>
+
+#define GLM_ENABLE_EXPERIMENTAL
+#include <glm/gtx/hash.hpp>
+
+#define TINYOBJLOADER_IMPLEMENTATION
+#include <tiny_obj_loader.h>
+
+// #include "Skeleton.h"
+#include "SkeletalAnimation.h"
+
 
 #ifdef NDEBUG
 	const bool enableValidationLayers = false;
@@ -32,6 +47,10 @@
 
 const uint32_t WIDTH = 800;
 const uint32_t HEIGHT = 600;
+
+const std::string MODEL_PATH = "model/animated.gltf";
+const std::string TEXTURE_PATH = "texture/viking_room.png";
+
 const int MAX_FRAMES_IN_FLIGHT = 2;
 
 const std::vector<const char*> validationLayers = {
@@ -41,8 +60,6 @@ const std::vector<const char*> validationLayers = {
 const std::vector<const char*> deviceExtensions = {
 	VK_KHR_SWAPCHAIN_EXTENSION_NAME
 };
-
-
 
 struct QueueFamilyIndices
 {
@@ -64,9 +81,13 @@ struct SwapChainSupportDetails
 
 struct Vertex
 {
-	glm::vec3 pos;
-	glm::vec3 color;
-	glm::vec2 texCoord;
+	glm::vec3 m_Pos;		// layout(location = 0)
+	glm::vec4 m_Color;		// layout(location = 1)
+	glm::vec3 m_Normal;		// layout(location = 2)
+	glm::vec2 m_UV;			// layout(location = 3)
+	glm::vec3 m_Tangent;	// layout(location = 4)
+	glm::ivec4 m_BoneIds;	// layout(location = 5)
+	glm::vec4 m_Weights;	// layout(location = 6)
 
 	static VkVertexInputBindingDescription getBindingDescription()
 	{
@@ -78,27 +99,80 @@ struct Vertex
 		return bindingDescription;
 	}
 
-	static std::array<VkVertexInputAttributeDescription, 3> getAttributeDescriptions()
+	static std::array<VkVertexInputAttributeDescription, 7> getAttributeDescriptions()
 	{
-		std::array<VkVertexInputAttributeDescription, 3> attributeDescriptions{};
+		std::array<VkVertexInputAttributeDescription, 7> attributeDescriptions{};
 		attributeDescriptions[0].binding = 0;
 		attributeDescriptions[0].location = 0;
 		attributeDescriptions[0].format = VK_FORMAT_R32G32B32_SFLOAT;
-		attributeDescriptions[0].offset = offsetof(Vertex, pos);
+		attributeDescriptions[0].offset = offsetof(Vertex, m_Pos);
 
 		attributeDescriptions[1].binding = 0;
 		attributeDescriptions[1].location = 1;
-		attributeDescriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
-		attributeDescriptions[1].offset = offsetof(Vertex, color);
+		attributeDescriptions[1].format = VK_FORMAT_R32G32B32A32_SFLOAT;
+		attributeDescriptions[1].offset = offsetof(Vertex, m_Color);
 
 		attributeDescriptions[2].binding = 0;
 		attributeDescriptions[2].location = 2;
-		attributeDescriptions[2].format = VK_FORMAT_R32G32_SFLOAT;
-		attributeDescriptions[2].offset = offsetof(Vertex, texCoord);
+		attributeDescriptions[2].format = VK_FORMAT_R32G32B32_SFLOAT;
+		attributeDescriptions[2].offset = offsetof(Vertex, m_Normal);
+
+		attributeDescriptions[3].binding = 0;
+		attributeDescriptions[3].location = 3;
+		attributeDescriptions[3].format = VK_FORMAT_R32G32_SFLOAT;
+		attributeDescriptions[3].offset = offsetof(Vertex, m_UV);
+
+		attributeDescriptions[4].binding = 0;
+		attributeDescriptions[4].location = 4;
+		attributeDescriptions[4].format = VK_FORMAT_R32G32B32_SFLOAT;
+		attributeDescriptions[4].offset = offsetof(Vertex, m_Tangent);
+
+		attributeDescriptions[5].binding = 0;
+		attributeDescriptions[5].location = 5;
+		attributeDescriptions[5].format = VK_FORMAT_R32G32B32A32_SINT;
+		attributeDescriptions[5].offset = offsetof(Vertex, m_BoneIds);
+
+		attributeDescriptions[6].binding = 0;
+		attributeDescriptions[6].location = 6;
+		attributeDescriptions[6].format = VK_FORMAT_R32G32B32A32_SFLOAT;
+		attributeDescriptions[6].offset = offsetof(Vertex, m_Weights);
 
 		return attributeDescriptions;
 	}
+
+	bool operator==(const Vertex& other) const
+	{
+		return	m_Pos	 == other.m_Pos &&
+				m_Color	 == other.m_Color &&
+				m_Normal == other.m_Normal &&
+				m_UV	 == other.m_UV && 
+				m_Tangent == other.m_Tangent &&
+				m_BoneIds == other.m_BoneIds &&
+				m_Weights == other.m_Weights;
+	}
 };
+namespace std
+{
+    template<> struct hash<Vertex>
+	{
+        size_t operator()(const Vertex& vertex) const
+		{
+            size_t seed = 0;
+
+            auto hashCombine = [](size_t& seed, size_t hash)
+			{
+                seed ^= hash + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+            };
+
+            hashCombine(seed, hash<glm::vec3>()(vertex.m_Pos));
+            hashCombine(seed, hash<glm::vec4>()(vertex.m_Color));
+            hashCombine(seed, hash<glm::vec3>()(vertex.m_Normal));
+            hashCombine(seed, hash<glm::vec2>()(vertex.m_UV));
+
+            return seed;
+        }
+    };
+}
 
 struct UniformBufferObject
 {
@@ -107,20 +181,11 @@ struct UniformBufferObject
 	glm::mat4 proj;
 };
 
-const std::vector<Vertex> vertices = {
-	{{-0.5f, -0.5f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}},
-	{{0.5f, -0.5f, 0.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}},
-	{{0.5f, 0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 1.0f}},
-	{{-0.5f, 0.5f, 0.0f}, {1.0f, 1.0f, 1.0f}, {0.0f, 1.0f}},
-	{{-0.5f, -0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}},
-	{{0.5f, -0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}},
-	{{0.5f, 0.5f, -0.5f}, {0.0f, 0.0f, 1.0f}, {1.0f, 1.0f}},
-	{{-0.5f, 0.5f, -0.5f}, {1.0f, 1.0f, 1.0f}, {0.0f, 1.0f}}
-};
+const int MAX_JOINTS = 100;
 
-const std::vector<uint16_t> indices = {
-	0, 1, 2, 2, 3, 0,
-	4, 5, 6, 6, 7, 4
+struct UBOData
+{
+	glm::mat4 jointTransforms[MAX_JOINTS];
 };
 
 VkResult CreateDebugUtilsMessengerEXT(VkInstance instance, const
@@ -148,6 +213,189 @@ void DestroyDebugUtilsMessengerEXT(VkInstance instance,
 
 	if (func != nullptr)
 		func(instance, debugMessenger, pAllocator);
+}
+
+/* 
+ * 
+ * 	TINY_GLTF_LOADER_TEST
+ * 
+ */
+
+struct Node
+{
+	glm::vec3 m_translation = glm::vec3(0.0f);
+	glm::quat m_rotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+	glm::vec3 m_scale = glm::vec3(1.0f);
+	glm::mat4 m_transform = glm::mat4(1.0f);
+	std::vector<int> m_children;
+
+	glm::mat4 getDeformedBindMatrix()
+	{
+		return	glm::translate(glm::mat4(1.0f), m_translation) * // T
+				glm::mat4(m_rotation) *                          // R
+				glm::scale(glm::mat4(1.0f), m_scale);            // S
+	}
+};
+
+struct Skeleton
+{
+	std::vector<Node> nodes;
+	std::vector<int> jointIndices;
+	std::vector<glm::mat4> inverseBindMatrices;
+	std::vector<glm::mat4> finalTransforms;
+};
+
+struct Texture
+{
+	int width;
+	int height;
+	int channels;
+	std::vector<unsigned char> data;
+};
+
+Texture loadTexture(const tinygltf::Model &model, int textureIndex)
+{
+	if (textureIndex < 0 || textureIndex >= model.textures.size())
+		throw std::runtime_error("Invalid texture index");
+
+	const auto &texture = model.textures[textureIndex];
+	const auto &image = model.images[texture.source];
+
+	// 이미지 데이터를 로드
+	Texture tex{};
+	tex.width = image.width;
+	tex.height = image.height;
+	tex.channels = image.component;
+	tex.data = image.image; // 이미지 데이터 (raw bytes)
+
+	return tex;
+}
+
+void LoadGLTF(const std::string& path, tinygltf::Model& model)
+{
+	tinygltf::TinyGLTF loader;
+	std::string err, warn;
+
+	bool res = loader.LoadASCIIFromFile(&model, &err, &warn, path);
+	if (!warn.empty()) std::cerr << "Warning: " << warn << std::endl;
+	if (!err.empty()) std::cerr << "Error: " << err << std::endl;
+	if (!res) throw std::runtime_error("Failed to load GLTF file.");
+}
+
+Skeleton ParseSkeleton(const tinygltf::Model &model)
+{
+	Skeleton skeleton;
+
+	// Parse nodes
+	for (const auto &node : model.nodes)
+	{
+		Node newNode;
+		if (!node.translation.empty())
+			newNode.m_translation = glm::vec3(node.translation[0], node.translation[1], node.translation[2]);
+		if (!node.rotation.empty())
+			newNode.m_rotation = glm::quat(node.rotation[3], node.rotation[0], node.rotation[1], node.rotation[2]);
+		if (!node.scale.empty())
+			newNode.m_scale = glm::vec3(node.scale[0], node.scale[1], node.scale[2]);
+		newNode.m_transform = glm::mat4(1.0f);
+
+		if (!node.children.empty())
+			newNode.m_children = node.children;
+		skeleton.nodes.push_back(newNode);
+	}
+
+	// Parse skins
+	if (!model.skins.empty())
+	{
+		const auto &skin = model.skins[0];
+
+		// Joint indices
+		skeleton.jointIndices = skin.joints;
+
+		// Inverse Bind Matrices
+		const tinygltf::Accessor &accessor = model.accessors[skin.inverseBindMatrices];
+		const tinygltf::BufferView &bufferView = model.bufferViews[accessor.bufferView];
+		const tinygltf::Buffer &buffer = model.buffers[bufferView.buffer];
+		const float *matrixData = reinterpret_cast<const float *>(
+			buffer.data.data() + bufferView.byteOffset + accessor.byteOffset);
+
+		for (size_t i = 0; i < accessor.count; ++i)
+		{
+			glm::mat4 mat = glm::make_mat4(matrixData + i * 16);
+			skeleton.inverseBindMatrices.push_back(mat);
+		}
+	}
+
+	skeleton.finalTransforms.resize(skeleton.jointIndices.size(), glm::mat4(1.0f));
+
+	return skeleton;
+}
+
+void ComputeFinalTransforms(Skeleton &skeleton, int nodeIndex, const glm::mat4 &parentTransform)
+{
+	Node &node = skeleton.nodes[nodeIndex];
+
+	glm::mat4 globalTransform = parentTransform * node.getDeformedBindMatrix();
+
+	// Update the transform for joints
+	for (size_t i = 0; i < skeleton.jointIndices.size(); ++i)
+	{
+		if (skeleton.jointIndices[i] == nodeIndex)
+		{
+			skeleton.finalTransforms[i] =
+				globalTransform * skeleton.inverseBindMatrices[i];
+		}
+	}
+
+	for (int childIndex : node.m_children)
+		ComputeFinalTransforms(skeleton, childIndex, globalTransform);
+}
+
+void UpdateSkeleton(Skeleton &skeleton)
+{
+    // Start with the root node (index 0)
+    ComputeFinalTransforms(skeleton, 0, glm::mat4(1.0f));
+}
+
+void AnimateSkeleton(Skeleton &skeleton, const tinygltf::Model &model, float time)
+{
+	if (model.animations.empty()) return;
+
+	const auto &animation = model.animations[0];
+	for (const auto &channel : animation.channels)
+	{
+		const auto &sampler = animation.samplers[channel.sampler];
+		const auto &inputAccessor = model.accessors[sampler.input];
+		const auto &outputAccessor = model.accessors[sampler.output];
+
+		const tinygltf::BufferView &inputBufferView = model.bufferViews[inputAccessor.bufferView];
+		const tinygltf::Buffer &inputBuffer = model.buffers[inputBufferView.buffer];
+		const float *times = reinterpret_cast<const float *>(
+			inputBuffer.data.data() + inputBufferView.byteOffset + inputAccessor.byteOffset);
+
+		const tinygltf::BufferView &outputBufferView = model.bufferViews[outputAccessor.bufferView];
+		const tinygltf::Buffer &outputBuffer = model.buffers[outputBufferView.buffer];
+
+		if (channel.target_path == "translation")
+		{
+			const glm::vec3 *translations = reinterpret_cast<const glm::vec3 *>(
+				outputBuffer.data.data() + outputBufferView.byteOffset + outputAccessor.byteOffset);
+			skeleton.nodes[channel.target_node].m_translation = translations[0]; // 보간 처리 필요
+		}
+		else if (channel.target_path == "rotation")
+		{
+			const glm::quat *rotations = reinterpret_cast<const glm::quat *>(
+				outputBuffer.data.data() + outputBufferView.byteOffset + outputAccessor.byteOffset);
+			skeleton.nodes[channel.target_node].m_rotation = rotations[0]; // 보간 처리 필요
+		}
+		else if (channel.target_path == "scale")
+		{
+			const glm::vec3 *scales = reinterpret_cast<const glm::vec3 *>(
+				outputBuffer.data.data() + outputBufferView.byteOffset + outputAccessor.byteOffset);
+			skeleton.nodes[channel.target_node].m_scale = scales[0]; // 보간 처리 필요
+		}
+	}
+
+    UpdateSkeleton(skeleton);
 }
 
 class HelloTriangleApplication
@@ -191,6 +439,8 @@ private:
 	std::vector<VkFence> inFlightFences;
 	bool framebufferResized = false;
 
+	std::vector<Vertex> vertices;
+	std::vector<uint32_t> indices;
 	std::vector<VkFramebuffer> swapChainFramebuffers;
 	VkBuffer vertexBuffer;
 	VkDeviceMemory vertexBufferMemory;
@@ -210,6 +460,7 @@ private:
 	VkImage depthImage;
 	VkDeviceMemory depthImageMemory;
 	VkImageView depthImageView;
+
 
 	void initWindow()
 	{
@@ -240,6 +491,7 @@ private:
 		createTextureImage();
 		createTextureImageView();
 		createTextureSampler();
+		loadModel();
 		createVertexBuffer();
 		createIndexBuffer();
 		createUniformBuffers();
@@ -801,7 +1053,7 @@ private:
 	void createTextureImage()
 	{
 		int texWidth, texHeight,texChannels;
-		stbi_uc* pixels = stbi_load("texture/statue.jpg", &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
+		stbi_uc* pixels = stbi_load(TEXTURE_PATH.c_str(), &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
 		VkDeviceSize imageSize = texWidth * texHeight * 4;
 
 		if (!pixels)
@@ -958,6 +1210,173 @@ private:
 			throw std::runtime_error("failed to allocate image memory");
 
 		vkBindImageMemory(device, image, imageMemory, 0);
+	}
+
+    tinygltf::Model model;
+
+	void loadModel()
+	{
+		tinygltf::TinyGLTF loader;
+		std::string warn, err;
+
+		if (!loader.LoadASCIIFromFile(&model, &warn, &err, "model/animated.gltf")) {
+			throw std::runtime_error("Failed to load GLTF file: " + warn + err);
+		}
+
+		// loadVertices();
+		loadTextures();
+		loadSkeletons();
+		loadMaterials();
+		
+	}
+
+	void loadVertices()
+	{
+		std::unordered_map<Vertex, uint32_t> uniqueVertices;
+
+		// GLTF의 모든 메쉬 처리
+		for (const auto &mesh : model.meshes) {
+			for (const auto &primitive : mesh.primitives) {
+				// POSITION 데이터
+				const auto &positionAccessor = model.accessors[primitive.attributes.at("POSITION")];
+				const auto &positionBufferView = model.bufferViews[positionAccessor.bufferView];
+				const auto &positionBuffer = model.buffers[positionBufferView.buffer];
+
+				const float *positions = reinterpret_cast<const float *>(
+					positionBuffer.data.data() + positionBufferView.byteOffset + positionAccessor.byteOffset);
+
+				// NORMAL 데이터 (옵션)
+				const float *normals = nullptr;
+				if (primitive.attributes.find("NORMAL") != primitive.attributes.end()) {
+					const auto &normalAccessor = model.accessors[primitive.attributes.at("NORMAL")];
+					const auto &normalBufferView = model.bufferViews[normalAccessor.bufferView];
+					const auto &normalBuffer = model.buffers[normalBufferView.buffer];
+
+					normals = reinterpret_cast<const float *>(
+						normalBuffer.data.data() + normalBufferView.byteOffset + normalAccessor.byteOffset);
+				}
+
+				// TEXCOORD_0 데이터 (옵션)
+				const float *texCoords = nullptr;
+				if (primitive.attributes.find("TEXCOORD_0") != primitive.attributes.end()) {
+					const auto &texCoordAccessor = model.accessors[primitive.attributes.at("TEXCOORD_0")];
+					const auto &texCoordBufferView = model.bufferViews[texCoordAccessor.bufferView];
+					const auto &texCoordBuffer = model.buffers[texCoordBufferView.buffer];
+
+					texCoords = reinterpret_cast<const float *>(
+						texCoordBuffer.data.data() + texCoordBufferView.byteOffset + texCoordAccessor.byteOffset);
+				}
+
+				// TANGENT 데이터 (옵션)
+				const float *tangents = nullptr;
+				if (primitive.attributes.find("TANGENT") != primitive.attributes.end()) {
+					const auto &tangentAccessor = model.accessors[primitive.attributes.at("TANGENT")];
+					const auto &tangentBufferView = model.bufferViews[tangentAccessor.bufferView];
+					const auto &tangentBuffer = model.buffers[tangentBufferView.buffer];
+
+					tangents = reinterpret_cast<const float *>(
+						tangentBuffer.data.data() + tangentBufferView.byteOffset + tangentAccessor.byteOffset);
+				}
+
+				// BONE_IDS와 WEIGHTS 데이터 (옵션)
+				const uint16_t *boneIds = nullptr;
+				const float *weights = nullptr;
+				if (primitive.attributes.find("JOINTS_0") != primitive.attributes.end() &&
+					primitive.attributes.find("WEIGHTS_0") != primitive.attributes.end()) {
+					const auto &boneIdAccessor = model.accessors[primitive.attributes.at("JOINTS_0")];
+					const auto &boneIdBufferView = model.bufferViews[boneIdAccessor.bufferView];
+					const auto &boneIdBuffer = model.buffers[boneIdBufferView.buffer];
+
+					boneIds = reinterpret_cast<const uint16_t *>(
+						boneIdBuffer.data.data() + boneIdBufferView.byteOffset + boneIdAccessor.byteOffset);
+
+					const auto &weightAccessor = model.accessors[primitive.attributes.at("WEIGHTS_0")];
+					const auto &weightBufferView = model.bufferViews[weightAccessor.bufferView];
+					const auto &weightBuffer = model.buffers[weightBufferView.buffer];
+
+					weights = reinterpret_cast<const float *>(
+						weightBuffer.data.data() + weightBufferView.byteOffset + weightAccessor.byteOffset);
+				}
+
+				// 인덱스 데이터
+				const auto &indexAccessor = model.accessors[primitive.indices];
+				const auto &indexBufferView = model.bufferViews[indexAccessor.bufferView];
+				const auto &indexBuffer = model.buffers[indexBufferView.buffer];
+
+				const uint16_t *indices16 = reinterpret_cast<const uint16_t *>(
+					indexBuffer.data.data() + indexBufferView.byteOffset + indexAccessor.byteOffset);
+
+				// 각 인덱스에 대해 버텍스 데이터 생성
+				for (size_t i = 0; i < indexAccessor.count; ++i) {
+					uint16_t index = indices16[i];
+
+					Vertex vertex{};
+					vertex.m_Pos = glm::vec3(
+						positions[3 * index + 0],
+						positions[3 * index + 1],
+						positions[3 * index + 2]);
+
+					if (normals) {
+						vertex.m_Normal = glm::vec3(
+							normals[3 * index + 0],
+							normals[3 * index + 1],
+							normals[3 * index + 2]);
+					}
+
+					if (texCoords) {
+						vertex.m_UV = glm::vec2(
+							texCoords[2 * index + 0],
+							1.0f - texCoords[2 * index + 1]); // UV 좌표의 Y 반전
+					}
+
+					if (tangents) {
+						vertex.m_Tangent = glm::vec3(
+							tangents[3 * index + 0],
+							tangents[3 * index + 1],
+							tangents[3 * index + 2]);
+					}
+
+					if (boneIds && weights) {
+						vertex.m_BoneIds = glm::ivec4(
+							boneIds[4 * index + 0],
+							boneIds[4 * index + 1],
+							boneIds[4 * index + 2],
+							boneIds[4 * index + 3]);
+
+						vertex.m_Weights = glm::vec4(
+							weights[4 * index + 0],
+							weights[4 * index + 1],
+							weights[4 * index + 2],
+							weights[4 * index + 3]);
+					}
+
+					vertex.m_Color = glm::vec4(1.0f); // 기본 색상
+
+					// 중복 버텍스 확인 및 추가
+					if (uniqueVertices.count(vertex) == 0) {
+						uniqueVertices[vertex] = static_cast<uint32_t>(vertices.size());
+						vertices.push_back(vertex);
+					}
+
+					indices.push_back(uniqueVertices[vertex]);
+				}
+			}
+		}
+	}
+
+	void loadTextures()
+	{
+
+	}
+
+	void loadSkeletons()
+	{
+
+	}
+
+	void loadMaterials()
+	{
+
 	}
 
 	void createVertexBuffer()
@@ -1258,7 +1677,7 @@ private:
 		VkBuffer vertexBuffers[] = {vertexBuffer};
 		VkDeviceSize offsets[] = {0};
 		vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
-		vkCmdBindIndexBuffer(commandBuffer, indexBuffer, 0, VK_INDEX_TYPE_UINT16);
+		vkCmdBindIndexBuffer(commandBuffer, indexBuffer, 0, VK_INDEX_TYPE_UINT32);
 
 		VkViewport viewport{};
 		viewport.x = 0.0f;
@@ -1348,10 +1767,16 @@ private:
 
 	void mainLoop()
 	{
+
+		Skeleton skeleton = ParseSkeleton(model);
+
+		float time = 0.0f;
 		while (!glfwWindowShouldClose(window))
 		{
 			glfwPollEvents();
 			drawFrame();
+			AnimateSkeleton(skeleton, model, time);
+			time += 0.016f;
 		}
 
 		vkDeviceWaitIdle(device);
@@ -1483,6 +1908,8 @@ private:
 		ubo.view = glm::lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
 		ubo.proj = glm::perspective(glm::radians(45.0f), swapChainExtent.width / (float) swapChainExtent.height, 0.1f, 10.0f);
 		ubo.proj[1][1] *= -1; // #GLM은 OpenGL용으로 디자인되었는데 거기선 Y좌표가 반전되어 있어서 -1을 곱한다.
+
+
 
 		memcpy(uniformBuffersMapped[currentImage], &ubo, sizeof(ubo));
 	}
